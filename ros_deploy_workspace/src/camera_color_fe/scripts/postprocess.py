@@ -75,10 +75,10 @@ def incremental_fit(x, y, k=FIT_K, lamb=FIT_LAMBDA):
     for i in range(1, k + 1):
         A[:, i] = xs**(i * 2)
 
-    ATA += A.T @ A
-    ATb += A.T @ ys
+    ATA += np.matmul(A.T, A)
+    ATb += np.matmul(A.T, ys)
 
-    alpha = np.linalg.inv(ATA) @ ATb
+    alpha = np.matmul(np.linalg.inv(ATA), ATb)
 
     xs, ys = [], []
 
