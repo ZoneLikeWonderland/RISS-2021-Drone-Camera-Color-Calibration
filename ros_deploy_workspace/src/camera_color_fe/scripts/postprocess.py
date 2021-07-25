@@ -2,24 +2,98 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
+import time
 
-
-x_base, y_base = None, None
-
+matplotlib.use('Agg')
 
 AREA_THRESHOLD = 0.1
 STD_THRESHOLD = 0.1
 LINE_MIN_LENGTH = 4
+FIT_K = 3
+FIT_LAMBDA = 0.01
+FIT_INTERVAL = 5
 
-plt.ion()
+
+x_base, y_base = None, None
+
+fit_fig = plt.figure(figsize=(4, 3), dpi=80)
+# fit_img = None
 
 
-show = np.zeros((1000, 640 * 1 + 640 + 200, 3), np.float32)
-expired_hint = np.zeros((100, 100, 3))
-expired_hint[:, :, -1] = np.arange(0, 100, 1) % 2 * 255
+show = np.zeros((1000, 640 * 1 + 640 + 200 + 640, 3), np.float32)
+expired_hint = np.zeros((100, 100))
+expired_hint[:] = np.arange(0, 100, 1) % 2 * 255
 expired_hint = cv2.resize(expired_hint, (show.shape[1], show.shape[0]), interpolation=cv2.INTER_NEAREST)
 
 coeff = np.array([1, 1, 1])
+
+last_fit_time = 0
+xs, ys = [], []
+ATA = None
+ATb = None
+alpha = None
+raw_shape = None
+show_line = None
+
+fade_raw_dist = None
+fade = None
+
+
+def make_fade(alpha):
+    global fade_raw_dist
+    if fade_raw_dist is None:
+        x_raw_base, y_raw_base = np.meshgrid(range(raw_shape[1]), range(raw_shape[0]))
+        fade_raw_dist = (((x_raw_base - raw_shape[1] / 2))**2 + ((y_raw_base - raw_shape[0] / 2))**2)**0.5 / max(raw_shape)
+
+    mul = np.zeros(raw_shape[:2])
+    k = FIT_K
+    for i in range(0, k + 1):
+        mul += alpha[i] * fade_raw_dist**(i * 2)
+    mul /= mul.max()
+    return mul
+
+
+def incremental_fit(x, y, k=FIT_K, lamb=FIT_LAMBDA):
+    global ATA, ATb, alpha, xs, ys, last_fit_time, show_line, fade
+    xs.append(x)
+    ys.append(y)
+
+    if not (time.time() - last_fit_time > FIT_INTERVAL and len(xs) > 0):
+        return
+
+    if ATA is None:
+        reg = np.identity(FIT_K + 1) * FIT_LAMBDA
+        reg[0, 0] = 0
+        ATA = reg
+        ATb = np.zeros(k + 1)
+
+    last_fit_time = time.time()
+    xs = np.array(xs)
+    ys = np.array(ys)
+    n = len(ys)
+    A = np.ones((n, k + 1))
+    for i in range(1, k + 1):
+        A[:, i] = xs**(i * 2)
+
+    ATA += A.T @ A
+    ATb += A.T @ ys
+
+    alpha = np.linalg.inv(ATA) @ ATb
+
+    xs, ys = [], []
+
+    xt = np.linspace(0, 0.5)
+    yt = np.zeros_like(xt)
+    for i in range(0, k + 1):
+        yt += alpha[i] * xt**(i * 2)
+
+    if show_line is not None:
+        show_line.pop(0).remove()
+    # plt.cla()
+    show_line = plt.plot(xt, yt)
+    plt.ylim(0, 0.5)
+    plt.draw()
+    fade = make_fade(alpha)
 
 
 def process(raw, block, point):
@@ -31,12 +105,16 @@ def process(raw, block, point):
     para
     show (?,?,3) 0-1
     """
+    global raw_shape
+    if raw_shape is None:
+        raw_shape = raw.shape
 
     show_list = {}
     ret = pickout(raw, block, point, show_list)
 
     global show
-    show += expired_hint
+    show[..., 0] -= 255 - expired_hint
+    show[..., -1] += expired_hint
     raw_show = cv2.resize(raw, (640, 480))
     show[:raw_show.shape[0], :raw_show.shape[1]] = raw_show
     show[:block.shape[0], raw_show.shape[1]:raw_show.shape[1] + block.shape[1]] = cv2.cvtColor(block, cv2.COLOR_GRAY2BGR)
@@ -46,10 +124,16 @@ def process(raw, block, point):
     if ret is not None:
         new_coeff, intensity = ret
         coeff = new_coeff
+        incremental_fit(intensity[0], intensity[1])
 
     balanced_show = raw_show * coeff
 
     show[raw_show.shape[0]:raw_show.shape[0] * 2, :raw_show.shape[1]] = balanced_show
+    global fade
+    if fade is not None:
+        if fade.shape != balanced_show.shape:
+            fade = cv2.resize(fade, (balanced_show.shape[1], balanced_show.shape[0]))
+        show[block.shape[0]:block.shape[0] * 2, -block.shape[1]:] = balanced_show / fade[..., None]
 
     for i in show_list:
         if len(show_list[i].shape) == 2:
@@ -62,6 +146,7 @@ def process(raw, block, point):
         show[200 * 2:200 * 3, raw_show.shape[1] + block.shape[1]:raw_show.shape[1] + block.shape[1] + 200] = show_list["canny_labels"]
         show[200 * 3:200 * 4, raw_show.shape[1] + block.shape[1]:raw_show.shape[1] + block.shape[1] + 200] = show_list["matrix"]
         show[200 * 4:200 * 5, raw_show.shape[1] + block.shape[1]:raw_show.shape[1] + block.shape[1] + 200] = show_list["warp_calibrated"]
+        show[:block.shape[0], -block.shape[1]:] = show_list["fit_img"]
     except KeyError:
         pass
 
@@ -78,7 +163,6 @@ def pickout(raw, rect, c, show_list):
 
     rect = cv2.dilate(rect, np.ones((10, 10)))
     rect_b = (rect > 0.05).astype(np.uint8)
-    #cv2.imshow("rect_b", rect_b * 255)
     retval, labels, stats, centroids = cv2.connectedComponentsWithStats(rect_b)
     bgid = labels[rect_b == 0].min()
     stats[bgid, 4] = -1
@@ -87,8 +171,6 @@ def pickout(raw, rect, c, show_list):
     c *= rect
 
     c_mask = (c > 0.1).astype(np.uint8) * 255
-
-    #cv2.imshow("c_mask", c_mask)
 
     retval, labels, stats, centroids = cv2.connectedComponentsWithStats(c_mask)
 
@@ -116,7 +198,6 @@ def pickout(raw, rect, c, show_list):
     for i, p in enumerate(ps):
         cv2.circle(c_show, (int(p[0]), int(p[1])), 10, 255)
         cv2.putText(c_show, str(i), (int(p[0]), int(p[1])), cv2.FONT_HERSHEY_SIMPLEX, 1, 255)
-    #cv2.imshow("c_show", c_show)
     show_list["c_show"] = c_show
 
     ps[:, 0] = ps[:, 0] / c.shape[1] * raw.shape[1]
@@ -131,7 +212,6 @@ def pickout(raw, rect, c, show_list):
     )
 
     warp = cv2.warpPerspective(raw, H, (tw, th))
-    #cv2.imshow("warp", warp)
     show_list["warp"] = warp
 
     warp = warp.astype(np.float32)
@@ -202,10 +282,8 @@ def pickout(raw, rect, c, show_list):
 
             new_label[labels == c] = c * 0.02
             cv2.putText(new_label, str(c), tuple([int(i) for i in centroids[c]]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-    #cv2.imshow("canny_labels", new_label)
     show_list["canny_labels"] = new_label
 
-    #cv2.imshow("canny", canny)
     show_list["canny"] = canny
     if len(select) <= 2:
         return
@@ -227,6 +305,8 @@ def pickout(raw, rect, c, show_list):
 
     xs, x_half = get_half(centroids[select][:, 0])
     ys, y_half = get_half(centroids[select][:, 1])
+    if x_half < tw / 16 or y_half < th / 16:
+        return
 
     for x in xs:
         cv2.line(new_label, (int(x), 0), (int(x), 999), 0.6)
@@ -247,7 +327,6 @@ def pickout(raw, rect, c, show_list):
             data = warp[select_area > 0]
             std = np.std(data, axis=0)
             mean = np.mean(data, axis=0)
-            # print(std)
             if (std > STD_THRESHOLD).any():
                 continue
 
@@ -256,10 +335,8 @@ def pickout(raw, rect, c, show_list):
 
             cv2.circle(new_label, (int(x), int(y)), int(min(width, height) * scale), 0.6, 1)
 
-    #cv2.imshow("canny_labels", new_label)
     show_list["canny_labels"] = new_label
     matrix_show = cv2.resize(matrix, warp.shape[:2], interpolation=cv2.INTER_NEAREST)
-    #cv2.imshow("matrix", matrix_show)
     show_list["matrix"] = matrix_show
 
     best = (-1, None, None, None)
@@ -312,7 +389,6 @@ def pickout(raw, rect, c, show_list):
                 if show_key[j, i] == 2:
                     cv2.circle(new_label, (int(x), int(y)), int(min(width, height) * scale), 1, 4)
 
-    #cv2.imshow("canny_labels", new_label)
     show_list["canny_labels"] = new_label
 
     to_be_calibrate = line[good > 0]
@@ -321,7 +397,6 @@ def pickout(raw, rect, c, show_list):
     coeff = coeff.mean(axis=0)
 
     warp_calibrated = coeff * warp
-    #cv2.imshow("warp_calibrated", warp_calibrated)
     show_list["warp_calibrated"] = warp_calibrated
 
     cv2.waitKey(1)
@@ -335,6 +410,8 @@ def pickout(raw, rect, c, show_list):
 
     plt.scatter(dist, bright)
     plt.draw()
-    plt.pause(0.01)
+
+    fit_img = np.fromstring(fit_fig.canvas.tostring_rgb(), dtype=np.uint8, sep='').reshape(fit_fig.canvas.get_width_height()[::-1] + (3,))
+    show_list["fit_img"] = cv2.resize(fit_img.astype(np.float32) / 255, (640, 480))
 
     return coeff, [dist.item(), bright.item()]

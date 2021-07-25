@@ -52,7 +52,3 @@ if __name__ == "__main__":
 
         cv2.imshow("show_all", show)
         cv2.waitKey(1)
-
-    json.dump(data, open("data.json", "w"))
-    plt.ioff()
-    plt.show()
