@@ -1,10 +1,9 @@
-# import cv2.ximgproc
-from functools import cmp_to_key
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
-# x_base, y_base = np.meshgrid(range(320), range(240))
+
+
 x_base, y_base = None, None
 
 
@@ -15,22 +14,77 @@ LINE_MIN_LENGTH = 4
 plt.ion()
 
 
+show = np.zeros((1000, 640 * 1 + 640 + 200, 3), np.float32)
+expired_hint = np.zeros((100, 100, 3))
+expired_hint[:, :, -1] = np.arange(0, 100, 1) % 2 * 255
+expired_hint = cv2.resize(expired_hint, (show.shape[1], show.shape[0]), interpolation=cv2.INTER_NEAREST)
+
+coeff = np.array([1, 1, 1])
+
+
+def process(raw, block, point):
+    """
+    raw: (H,W,3) 0-1
+    block: (480,640) 0-1
+    point: (480,640) 0-1
+    =>
+    para
+    show (?,?,3) 0-1
+    """
+
+    show_list = {}
+    ret = pickout(raw, block, point, show_list)
+
+    global show
+    show += expired_hint
+    raw_show = cv2.resize(raw, (640, 480))
+    show[:raw_show.shape[0], :raw_show.shape[1]] = raw_show
+    show[:block.shape[0], raw_show.shape[1]:raw_show.shape[1] + block.shape[1]] = cv2.cvtColor(block, cv2.COLOR_GRAY2BGR)
+    show[block.shape[0]:block.shape[0] + point.shape[0], raw_show.shape[1]:raw_show.shape[1] + block.shape[1]] = cv2.cvtColor(point, cv2.COLOR_GRAY2BGR)
+
+    global coeff
+    if ret is not None:
+        new_coeff, intensity = ret
+        coeff = new_coeff
+
+    balanced_show = raw_show * coeff
+
+    show[raw_show.shape[0]:raw_show.shape[0] * 2, :raw_show.shape[1]] = balanced_show
+
+    for i in show_list:
+        if len(show_list[i].shape) == 2:
+            show_list[i] = cv2.cvtColor(show_list[i], cv2.COLOR_GRAY2BGR)
+
+    try:
+        show[block.shape[0]:block.shape[0] + point.shape[0], raw_show.shape[1]:raw_show.shape[1] + block.shape[1]] = show_list["c_show"]
+        show[:200, raw_show.shape[1] + block.shape[1]:raw_show.shape[1] + block.shape[1] + 200] = show_list["warp"]
+        show[200:200 * 2, raw_show.shape[1] + block.shape[1]:raw_show.shape[1] + block.shape[1] + 200] = show_list["canny"]
+        show[200 * 2:200 * 3, raw_show.shape[1] + block.shape[1]:raw_show.shape[1] + block.shape[1] + 200] = show_list["canny_labels"]
+        show[200 * 3:200 * 4, raw_show.shape[1] + block.shape[1]:raw_show.shape[1] + block.shape[1] + 200] = show_list["matrix"]
+        show[200 * 4:200 * 5, raw_show.shape[1] + block.shape[1]:raw_show.shape[1] + block.shape[1] + 200] = show_list["warp_calibrated"]
+    except KeyError:
+        pass
+
+    para = {}
+    para["coeff"] = coeff
+    return para, show
+
+
 def pickout(raw, rect, c, show_list):
 
     global x_base, y_base
     if x_base is None:
         x_base, y_base = np.meshgrid(range(c.shape[1]), range(c.shape[0]))
 
-    if rect is not None:
-        rect = cv2.dilate(rect, np.ones((10, 10)))
-        rect_b = (rect > 0.05).astype(np.uint8)
-        #cv2.imshow("rect_b", rect_b * 255)
-        retval, labels, stats, centroids = cv2.connectedComponentsWithStats(rect_b)
-        bgid = labels[rect_b == 0].min()
-        stats[bgid, 4] = -1
-        tgtid = np.argmax(stats[:, -1])
-        rect[labels != tgtid] = 0
-        c *= rect
+    rect = cv2.dilate(rect, np.ones((10, 10)))
+    rect_b = (rect > 0.05).astype(np.uint8)
+    #cv2.imshow("rect_b", rect_b * 255)
+    retval, labels, stats, centroids = cv2.connectedComponentsWithStats(rect_b)
+    bgid = labels[rect_b == 0].min()
+    stats[bgid, 4] = -1
+    tgtid = np.argmax(stats[:, -1])
+    rect[labels != tgtid] = 0
+    c *= rect
 
     c_mask = (c > 0.1).astype(np.uint8) * 255
 
@@ -51,10 +105,11 @@ def pickout(raw, rect, c, show_list):
         ps.append((-pc.sum(), (x, y)))
         cv2.circle(c_show, (int(x), int(y)), 10, 0.2)
 
+    if len(ps) < 4:
+        return
     ps = [i[1] for i in sorted(ps)[:4]]
     ps = np.array(ps)
     center = ps.mean(axis=0)
-    # print("center", center)
     ps = sorted(ps, key=lambda p: np.arctan2((p - center)[1], (p - center)[0]))
     ps = np.array(ps)
 
@@ -63,9 +118,6 @@ def pickout(raw, rect, c, show_list):
         cv2.putText(c_show, str(i), (int(p[0]), int(p[1])), cv2.FONT_HERSHEY_SIMPLEX, 1, 255)
     #cv2.imshow("c_show", c_show)
     show_list["c_show"] = c_show
-
-    if len(ps) < 4:
-        return
 
     ps[:, 0] = ps[:, 0] / c.shape[1] * raw.shape[1]
     ps[:, 1] = ps[:, 1] / c.shape[0] * raw.shape[0]
@@ -96,9 +148,7 @@ def pickout(raw, rect, c, show_list):
 
     expected_area = widths * heights
     exp_ratio = expected_area / area[:, 0]
-    # print(exp_ratio)
     reject = (exp_ratio > 1 + AREA_THRESHOLD) | (exp_ratio < 1 - AREA_THRESHOLD)
-    # print(reject)
     stats_id = np.concatenate((
         area,
         np.arange(0, retval)[:, None],
@@ -111,8 +161,6 @@ def pickout(raw, rect, c, show_list):
         return
     stats_ratio[1:, 0] /= stats_ratio[:-1, 0]
     stats_ratio[0, 0] = 0
-
-    # print(stats_ratio)
 
     start = None
     end = None
@@ -127,7 +175,7 @@ def pickout(raw, rect, c, show_list):
         if end is None and start is not None and stats_ratio[i, 0] > 1.1:
             end = i
             best = max(best, (end - start, start, end))
-            if end - start > 4:
+            if end - start >= LINE_MIN_LENGTH:
                 notbad.append((end - start, start, end))
             start = None
             end = None
@@ -164,15 +212,11 @@ def pickout(raw, rect, c, show_list):
 
     def get_half(ar):
         xs = np.array(sorted(ar))
-        # print(xs)
         xs = np.array(sorted(xs[1:] - xs[:-1]))
         half = xs[xs > xs.mean()].mean() / 2
-        # print(xs, half)
         jl = np.zeros(ar.shape, np.int)
-        # jl2 = np.zeros(ar.shape, np.int)
         for i in range(ar.shape[0]):
             jl[(ar < ar[i] + half) & (ar > ar[i] - half)] = i
-        # print(ar)
 
         ms = []
         for i, j in enumerate(sorted(np.unique(jl))):
@@ -191,7 +235,6 @@ def pickout(raw, rect, c, show_list):
 
     width = np.median(widths[select])
     height = np.median(heights[select])
-    # print(widths, heights)
     scale = 0.4
 
     matrix = np.zeros((len(ys), len(xs), 3))
@@ -230,8 +273,6 @@ def pickout(raw, rect, c, show_list):
         if diff.min() < 0:
             continue
         crstd = np.std(line / line.mean(axis=1)[..., None], axis=0).sum()
-        # plt.plot(line/line.mean(axis=1)[...,None])
-        # plt.show()
         best = max(best, (-crstd, (slice(None, None, None), i), line, diff))
 
     for j, y in enumerate(ys):
@@ -243,13 +284,9 @@ def pickout(raw, rect, c, show_list):
         if diff.min() < 0:
             continue
         crstd = np.std(line / line.mean(axis=1)[..., None], axis=0).sum()
-        # plt.plot(line/line.mean(axis=1)[...,None])
-        # plt.show()
         best = max(best, (-crstd, (j, slice(None, None, None)), line, diff))
 
     show_key = np.zeros((len(ys), len(xs)))
-
-    # print(best)
 
     _, idx, line, diff = best
     if idx is None:
@@ -275,18 +312,13 @@ def pickout(raw, rect, c, show_list):
                 if show_key[j, i] == 2:
                     cv2.circle(new_label, (int(x), int(y)), int(min(width, height) * scale), 1, 4)
 
-    # print(show_key)
-
     #cv2.imshow("canny_labels", new_label)
     show_list["canny_labels"] = new_label
 
-    # print(good)
     to_be_calibrate = line[good > 0]
-    # print(to_be_calibrate)
     coeff = 1 / to_be_calibrate
     coeff /= coeff.min(axis=1)[..., None]
     coeff = coeff.mean(axis=0)
-    # print(coeff)
 
     warp_calibrated = coeff * warp
     #cv2.imshow("warp_calibrated", warp_calibrated)
