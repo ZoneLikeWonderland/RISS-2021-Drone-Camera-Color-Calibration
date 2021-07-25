@@ -25,8 +25,7 @@ def pickout(raw, rect, c, show_list):
         rect = cv2.dilate(rect, np.ones((10, 10)))
         rect_b = (rect > 0.05).astype(np.uint8)
         #cv2.imshow("rect_b", rect_b * 255)
-        retval, labels, stats, centroids = cv2.connectedComponentsWithStats(
-            rect_b)
+        retval, labels, stats, centroids = cv2.connectedComponentsWithStats(rect_b)
         bgid = labels[rect_b == 0].min()
         stats[bgid, 4] = -1
         tgtid = np.argmax(stats[:, -1])
@@ -61,8 +60,7 @@ def pickout(raw, rect, c, show_list):
 
     for i, p in enumerate(ps):
         cv2.circle(c_show, (int(p[0]), int(p[1])), 10, 255)
-        cv2.putText(c_show, str(i), (int(p[0]), int(
-            p[1])), cv2.FONT_HERSHEY_SIMPLEX, 1, 255)
+        cv2.putText(c_show, str(i), (int(p[0]), int(p[1])), cv2.FONT_HERSHEY_SIMPLEX, 1, 255)
     #cv2.imshow("c_show", c_show)
     show_list["c_show"] = c_show
 
@@ -91,8 +89,7 @@ def pickout(raw, rect, c, show_list):
     canny = cv2.erode(canny, None)
     canny = 255 - canny
 
-    retval, labels, stats, centroids = cv2.connectedComponentsWithStats(
-        canny, connectivity=4)
+    retval, labels, stats, centroids = cv2.connectedComponentsWithStats(canny, connectivity=4)
     area = stats[:, -1:]
     widths = stats[:, 2]
     heights = stats[:, 3]
@@ -150,14 +147,13 @@ def pickout(raw, rect, c, show_list):
             std = np.std(warp[labels == c], axis=0)
             if (std > STD_THRESHOLD).any():
                 continue
-            if (labels == c).sum() < tw*th/40:
+            if (labels == c).sum() < tw * th / 40:
                 continue
 
             select.append(c)
 
             new_label[labels == c] = c * 0.02
-            cv2.putText(new_label, str(c), tuple(
-                [int(i) for i in centroids[c]]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            cv2.putText(new_label, str(c), tuple([int(i) for i in centroids[c]]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
     #cv2.imshow("canny_labels", new_label)
     show_list["canny_labels"] = new_label
 
@@ -204,8 +200,7 @@ def pickout(raw, rect, c, show_list):
     for i, x in enumerate(xs):
         for j, y in enumerate(ys):
             select_area = np.zeros_like(new_label)
-            cv2.circle(select_area, (int(x), int(y)), int(
-                min(width, height) * scale), 255, -1)
+            cv2.circle(select_area, (int(x), int(y)), int(min(width, height) * scale), 255, -1)
             data = warp[select_area > 0]
             std = np.std(data, axis=0)
             mean = np.mean(data, axis=0)
@@ -216,13 +211,11 @@ def pickout(raw, rect, c, show_list):
             matrix[j, i] = mean
             matrix_use[j, i] = 1
 
-            cv2.circle(new_label, (int(x), int(y)), int(
-                min(width, height) * scale), 0.6, 1)
+            cv2.circle(new_label, (int(x), int(y)), int(min(width, height) * scale), 0.6, 1)
 
     #cv2.imshow("canny_labels", new_label)
     show_list["canny_labels"] = new_label
-    matrix_show = cv2.resize(
-        matrix, warp.shape[:2], interpolation=cv2.INTER_NEAREST)
+    matrix_show = cv2.resize(matrix, warp.shape[:2], interpolation=cv2.INTER_NEAREST)
     #cv2.imshow("matrix", matrix_show)
     show_list["matrix"] = matrix_show
 
@@ -278,11 +271,9 @@ def pickout(raw, rect, c, show_list):
         for j, y in enumerate(ys):
             if matrix_use[j, i] > 0:
                 if show_key[j, i] == 1:
-                    cv2.circle(new_label, (int(x), int(y)), int(
-                        min(width, height) * scale), 0.8, 2)
+                    cv2.circle(new_label, (int(x), int(y)), int(min(width, height) * scale), 0.8, 2)
                 if show_key[j, i] == 2:
-                    cv2.circle(new_label, (int(x), int(y)), int(
-                        min(width, height) * scale), 1, 4)
+                    cv2.circle(new_label, (int(x), int(y)), int(min(width, height) * scale), 1, 4)
 
     # print(show_key)
 
@@ -308,30 +299,10 @@ def pickout(raw, rect, c, show_list):
     x = ps[:, 0].mean()
     y = ps[:, 1].mean()
 
-    dist = ((x-raw.shape[1]/2)**2+(y-raw.shape[0]/2)**2)**0.5\
-        / max(raw.shape)
+    dist = ((x - raw.shape[1] / 2)**2 + (y - raw.shape[0] / 2)**2)**0.5 / max(raw.shape)
 
     plt.scatter(dist, bright)
     plt.draw()
     plt.pause(0.01)
 
     return coeff, [dist.item(), bright.item()]
-
-
-if __name__ == "__main__":
-
-    raw = cv2.imread(r"C:\Users\pc-16\Downloads\image_left_03.png") / 255
-    r = cv2.imread(r"C:\Users\pc-16\Downloads\pred_r.png",
-                   cv2.IMREAD_GRAYSCALE) / 255
-    c = cv2.imread(r"C:\Users\pc-16\Downloads\pred_c.png",
-                   cv2.IMREAD_GRAYSCALE) / 255
-
-    # # pickout(raw, r, c)
-    # raw = cv2.imread(r"C:\Users\pc-16\Downloads\image_left_03_blur.png") / 255
-
-    # raw = cv2.imread(r"E:\RISS\img.png") / 255
-    # r = cv2.imread(r"E:\RISS\pred.png", cv2.IMREAD_GRAYSCALE) / 255
-    # c = cv2.imread(r"E:\RISS\pred_c.png", cv2.IMREAD_GRAYSCALE) / 255
-    coeff = pickout(raw, r, c)
-    cv2.imwrite("output.png", raw * coeff * 255)
-    cv2.waitKey()
