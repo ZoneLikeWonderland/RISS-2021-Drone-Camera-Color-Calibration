@@ -1,10 +1,10 @@
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib
 import time
-
-matplotlib.use('Agg')
+import matplotlib
+if True:
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
 
 AREA_THRESHOLD = 0.1
 STD_THRESHOLD = 0.1
