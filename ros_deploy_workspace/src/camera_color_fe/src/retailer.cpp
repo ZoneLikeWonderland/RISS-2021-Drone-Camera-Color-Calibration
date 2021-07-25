@@ -43,90 +43,80 @@ std::string input_name;
 std::string output_name;
 ExecutableNetwork executable_network;
 
+InferenceEngine::Blob::Ptr wrapMat2Blob_f32(const cv::Mat &mat)
+{
+  size_t channels = mat.channels();
+  size_t height = mat.size().height;
+  size_t width = mat.size().width;
 
+  InferenceEngine::TensorDesc tDesc(InferenceEngine::Precision::FP32,
+                                    {1, channels, height, width},
+                                    InferenceEngine::Layout::NHWC);
 
-InferenceEngine::Blob::Ptr wrapMat2Blob_f32(const cv::Mat &mat) {
-    size_t channels = mat.channels();
-    size_t height = mat.size().height;
-    size_t width = mat.size().width;
-
-    InferenceEngine::TensorDesc tDesc(InferenceEngine::Precision::FP32,
-                                      {1, channels, height, width},
-                                      InferenceEngine::Layout::NHWC);
-
-    return InferenceEngine::make_shared_blob<float>(tDesc, (float*)mat.data);
+  return InferenceEngine::make_shared_blob<float>(tDesc, (float *)mat.data);
 }
 
+sensor_msgs::Image Mat2Image(cv::Mat frame_now, int channel = 3)
+{
 
+  sensor_msgs::Image output_image_msg;
 
-sensor_msgs::Image Mat2Image(cv::Mat frame_now,int channel=3){
+  output_image_msg.height = frame_now.rows;
+  output_image_msg.width = frame_now.cols;
+  output_image_msg.encoding = "bgr8";
+  output_image_msg.is_bigendian = false;
+  output_image_msg.step = frame_now.cols * channel;
+  size_t size = output_image_msg.step * frame_now.rows;
+  output_image_msg.data.resize(size);
+  memcpy((char *)(&output_image_msg.data[0]), frame_now.data, size);
 
-    sensor_msgs::Image output_image_msg;
-
-
-                    output_image_msg.height=frame_now.rows;
-                    output_image_msg.width=frame_now.cols;
-                    output_image_msg.encoding="bgr8";
-                    output_image_msg.is_bigendian=false;
-                    output_image_msg.step=frame_now.cols*channel;
-                    size_t size = output_image_msg.step * frame_now.rows;
-                    output_image_msg.data.resize(size);
-                    memcpy((char*)(&output_image_msg.data[0]), frame_now.data, size);
-
-return output_image_msg;
+  return output_image_msg;
 }
 
-void imageCallback(const sensor_msgs::Image::ConstPtr& image_msg){
-    //cv::Mat color_mat(image_msg->height,image_msg->width,CV_MAKETYPE(CV_8U,3),const_cast<uchar*>(&image_msg->data[0]), image_msg->step);
-    //cv::cvtColor(color_mat,color_mat,cv::COLOR_BGR2RGB);
-    ROS_INFO("I heard a image %dx%d", image_msg->width, image_msg->height);
-    cv::Mat bayer_mat(image_msg->height,image_msg->width,CV_8U,const_cast<uchar*>(&image_msg->data[0]), image_msg->step);
-    cv::Mat color_mat;
+void imageCallback(const sensor_msgs::Image::ConstPtr &image_msg)
+{
+  //cv::Mat color_mat(image_msg->height,image_msg->width,CV_MAKETYPE(CV_8U,3),const_cast<uchar*>(&image_msg->data[0]), image_msg->step);
+  //cv::cvtColor(color_mat,color_mat,cv::COLOR_BGR2RGB);
+  ROS_INFO("I heard a image %dx%d", image_msg->width, image_msg->height);
+  cv::Mat bayer_mat(image_msg->height, image_msg->width, CV_8U, const_cast<uchar *>(&image_msg->data[0]), image_msg->step);
+  cv::Mat color_mat;
 
-    cv::cvtColor(bayer_mat,color_mat,cv::COLOR_BayerRG2BGR);
-cv::resize(color_mat,color_mat,{color_mat.cols/2,color_mat.rows/2});
+  cv::cvtColor(bayer_mat, color_mat, cv::COLOR_BayerRG2BGR);
+  cv::resize(color_mat, color_mat, {color_mat.cols / 2, color_mat.rows / 2});
 
+  InferRequest infer_request = executable_network.CreateInferRequest();
+  cv::Mat image_f32;
+  color_mat.convertTo(image_f32, CV_32FC3, 1.0 / 255);
+  Blob::Ptr imgBlob = wrapMat2Blob_f32(image_f32); // just wrap Mat data by Blob::Ptr without allocating of new memory
+  infer_request.SetBlob(input_name, imgBlob);      // infer_request accepts input blob of any size
 
+  auto start = std::chrono::steady_clock::now();
+  //            std::cout<<clock()*1.0/CLOCKS_PER_SEC<<"\n";
+  infer_request.Infer();
+  //            std::cout<<clock()*1.0/CLOCKS_PER_SEC<<"\n";
+  auto duration = std::chrono::steady_clock::now() - start;
+  std::cout << "time = " << std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() << "ms\n";
 
-InferRequest infer_request = executable_network.CreateInferRequest();
-        cv::Mat image_f32;
-        color_mat.convertTo(image_f32,CV_32FC3,1.0/255);
-        Blob::Ptr imgBlob = wrapMat2Blob_f32(image_f32);  // just wrap Mat data by Blob::Ptr without allocating of new memory
-        infer_request.SetBlob(input_name, imgBlob);  // infer_request accepts input blob of any size
+  Blob::Ptr output = infer_request.GetBlob(output_name);
+  auto raw_ptr = output->buffer().as<PrecisionTrait<Precision::FP32>::value_type *>();
+  auto outbox = cv::Mat(480, 640, CV_32F, raw_ptr);
+  // cv::imwrite("outbox.png",outbox*255);
+  auto outptr = cv::Mat(480, 640, CV_32F, raw_ptr + 640 * 480);
+  //  cv::imwrite("outptr.png",outptr*255);
 
-            auto start=std::chrono::steady_clock::now();
-//            std::cout<<clock()*1.0/CLOCKS_PER_SEC<<"\n";
-            infer_request.Infer();
-//            std::cout<<clock()*1.0/CLOCKS_PER_SEC<<"\n";
-            auto duration=std::chrono::steady_clock::now()-start;
-            std::cout<<"time = "<<std::chrono::duration_cast<std::chrono::milliseconds>(duration).count()<<"ms\n";
+  cv::Mat outbox_8u;
+  outbox.convertTo(outbox_8u, CV_8UC1, 255);
 
+  cv::Mat outptr_8u;
+  outptr.convertTo(outptr_8u, CV_8UC1, 255);
 
-        Blob::Ptr output = infer_request.GetBlob(output_name);
-        auto raw_ptr=output->buffer().as<PrecisionTrait<Precision::FP32>::value_type*>();
-        auto outbox=cv::Mat(480,640,CV_32F,raw_ptr);
-       // cv::imwrite("outbox.png",outbox*255);
-        auto outptr=cv::Mat(480,640,CV_32F,raw_ptr+640*480);
-      //  cv::imwrite("outptr.png",outptr*255);
+  camera_color_fe::colorir ir;
 
-cv::Mat outbox_8u;
-outbox.convertTo(outbox_8u,CV_8UC1,255);
+  ir.raw = Mat2Image(color_mat);
+  ir.block = Mat2Image(outbox_8u, 1);
+  ir.point = Mat2Image(outptr_8u, 1);
 
-cv::Mat outptr_8u;
-outptr.convertTo(outptr_8u,CV_8UC1,255);
-
-camera_color_fe::colorir ir;
-
-
-
-ir.raw=Mat2Image(color_mat);
-ir.block=Mat2Image(outbox_8u,1);
-ir.point=Mat2Image(outptr_8u,1);
-
-                    retailer_pub.publish(ir);
-
-
-
+  retailer_pub.publish(ir);
 }
 // %EndTag(CALLBACK)%
 
@@ -134,23 +124,23 @@ int main(int argc, char **argv)
 {
 
   Core ie;
-  std::string input_model="/zlwtest/deploy/card/card.xml";
+  std::string input_model = "/zlwtest/deploy/card/card.xml";
   CNNNetwork network = ie.ReadNetwork(input_model);
 
-        InputInfo::Ptr input_info = network.getInputsInfo().begin()->second;
-         input_name = network.getInputsInfo().begin()->first;
+  InputInfo::Ptr input_info = network.getInputsInfo().begin()->second;
+  input_name = network.getInputsInfo().begin()->first;
 
-        input_info->getPreProcess().setResizeAlgorithm(RESIZE_BILINEAR);
-        input_info->setLayout(Layout::NHWC);
-        input_info->setPrecision(Precision::FP32);
+  input_info->getPreProcess().setResizeAlgorithm(RESIZE_BILINEAR);
+  input_info->setLayout(Layout::NHWC);
+  input_info->setPrecision(Precision::FP32);
 
-       DataPtr output_info = network.getOutputsInfo().begin()->second;
-        output_name = network.getOutputsInfo().begin()->first;
+  DataPtr output_info = network.getOutputsInfo().begin()->second;
+  output_name = network.getOutputsInfo().begin()->first;
 
-        output_info->setPrecision(Precision::FP32);
+  output_info->setPrecision(Precision::FP32);
 
-std::string device_name="CPU";
-     executable_network = ie.LoadNetwork(network, device_name);
+  std::string device_name = "CPU";
+  executable_network = ie.LoadNetwork(network, device_name);
 
   /**
    * The ros::init() function needs to see argc and argv so that it can perform
@@ -186,22 +176,21 @@ std::string device_name="CPU";
    * is the number of messages that will be buffered up before beginning to throw
    * away the oldest ones.
    */
-// %Tag(SUBSCRIBER)%
+  // %Tag(SUBSCRIBER)%
   //retailer_pub = n.advertise<sensor_msgs::Image>("retailer", 1);
   retailer_pub = n.advertise<camera_color_fe::colorir>("retailer", 1);
   ros::Subscriber sub = n.subscribe("/xic_stereo/left/image_raw", 1, imageCallback);
-// %EndTag(SUBSCRIBER)%
+  // %EndTag(SUBSCRIBER)%
 
   /**
    * ros::spin() will enter a loop, pumping callbacks.  With this version, all
    * callbacks will be called from within this thread (the main one).  ros::spin()
    * will exit when Ctrl-C is pressed, or the node is shutdown by the master.
    */
-// %Tag(SPIN)%
+  // %Tag(SPIN)%
   ros::spin();
-// %EndTag(SPIN)%
+  // %EndTag(SPIN)%
 
   return 0;
 }
 // %EndTag(FULLTEXT)%
-

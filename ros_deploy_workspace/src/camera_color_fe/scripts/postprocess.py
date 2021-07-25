@@ -15,7 +15,7 @@ LINE_MIN_LENGTH = 4
 plt.ion()
 
 
-def pickout(raw, rect, c,show_list):
+def pickout(raw, rect, c, show_list):
 
     global x_base, y_base
     if x_base is None:
@@ -64,7 +64,7 @@ def pickout(raw, rect, c,show_list):
         cv2.putText(c_show, str(i), (int(p[0]), int(
             p[1])), cv2.FONT_HERSHEY_SIMPLEX, 1, 255)
     #cv2.imshow("c_show", c_show)
-    show_list["c_show"]=c_show
+    show_list["c_show"] = c_show
 
     if len(ps) < 4:
         return
@@ -82,7 +82,7 @@ def pickout(raw, rect, c,show_list):
 
     warp = cv2.warpPerspective(raw, H, (tw, th))
     #cv2.imshow("warp", warp)
-    show_list["warp"]=warp
+    show_list["warp"] = warp
 
     warp = warp.astype(np.float32)
 
@@ -159,10 +159,10 @@ def pickout(raw, rect, c,show_list):
             cv2.putText(new_label, str(c), tuple(
                 [int(i) for i in centroids[c]]), cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
     #cv2.imshow("canny_labels", new_label)
-    show_list["canny_labels"]=new_label
+    show_list["canny_labels"] = new_label
 
     #cv2.imshow("canny", canny)
-    show_list["canny"]=canny
+    show_list["canny"] = canny
     if len(select) <= 2:
         return
 
@@ -220,11 +220,11 @@ def pickout(raw, rect, c,show_list):
                 min(width, height) * scale), 0.6, 1)
 
     #cv2.imshow("canny_labels", new_label)
-    show_list["canny_labels"]=new_label
-    matrix_show=cv2.resize(
+    show_list["canny_labels"] = new_label
+    matrix_show = cv2.resize(
         matrix, warp.shape[:2], interpolation=cv2.INTER_NEAREST)
     #cv2.imshow("matrix", matrix_show)
-    show_list["matrix"]=matrix_show
+    show_list["matrix"] = matrix_show
 
     best = (-1, None, None, None)
 
@@ -287,7 +287,7 @@ def pickout(raw, rect, c,show_list):
     # print(show_key)
 
     #cv2.imshow("canny_labels", new_label)
-    show_list["canny_labels"]=new_label
+    show_list["canny_labels"] = new_label
 
     # print(good)
     to_be_calibrate = line[good > 0]
@@ -299,7 +299,7 @@ def pickout(raw, rect, c,show_list):
 
     warp_calibrated = coeff * warp
     #cv2.imshow("warp_calibrated", warp_calibrated)
-    show_list["warp_calibrated"]=warp_calibrated
+    show_list["warp_calibrated"] = warp_calibrated
 
     cv2.waitKey(1)
 
@@ -335,4 +335,3 @@ if __name__ == "__main__":
     coeff = pickout(raw, r, c)
     cv2.imwrite("output.png", raw * coeff * 255)
     cv2.waitKey()
-
