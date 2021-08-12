@@ -8,10 +8,18 @@ if True:
 
 AREA_THRESHOLD = 0.1
 STD_THRESHOLD = 0.1
+EXPOSURE_THRESHOLD = 0.005
+CRSTD_THRESHOLD = 0.16
+MIN_PATCH_RATIO_THRESHOLD = 1 / (40 * 2)
+MIN_INTERVAL_THRESHOLD = 1 / (16 * 2)
 LINE_MIN_LENGTH = 4
 FIT_K = 3
-FIT_LAMBDA = 0.01
+FIT_LAMBDA = 0.1
 FIT_INTERVAL = 5
+COEFF_LENGTH = 100
+
+ENABLE_PLT = True
+ENABLE_EXPIRED_HINT = True
 
 
 x_base, y_base = None, None
@@ -25,6 +33,7 @@ expired_hint = np.zeros((100, 100))
 expired_hint[:] = np.arange(0, 100, 1) % 2 * 255
 expired_hint = cv2.resize(expired_hint, (show.shape[1], show.shape[0]), interpolation=cv2.INTER_NEAREST)
 
+to_be_list = []
 coeff = np.array([1, 1, 1])
 
 last_fit_time = 0
@@ -79,6 +88,7 @@ def incremental_fit(x, y, k=FIT_K, lamb=FIT_LAMBDA):
     ATb += np.matmul(A.T, ys)
 
     alpha = np.matmul(np.linalg.inv(ATA), ATb)
+    alpha[1:] = np.minimum(alpha[1:], 0)
 
     xs, ys = [], []
 
@@ -89,14 +99,14 @@ def incremental_fit(x, y, k=FIT_K, lamb=FIT_LAMBDA):
 
     if show_line is not None:
         show_line.pop(0).remove()
-    # plt.cla()
-    show_line = plt.plot(xt, yt)
-    plt.ylim(0, 0.5)
-    plt.draw()
+    if ENABLE_PLT:
+        show_line = plt.plot(xt, yt)
+        plt.ylim(0, 0.5)
+        plt.draw()
     fade = make_fade(alpha)
 
 
-def process(raw, block, point):
+def process(raw, block, point, settings={}):
     """
     raw: (H,W,3) 0-1
     block: (480,640) 0-1
@@ -105,6 +115,9 @@ def process(raw, block, point):
     para
     show (?,?,3) 0-1
     """
+    for i in settings:
+        globals()[i] = settings[i]
+
     global raw_shape
     if raw_shape is None:
         raw_shape = raw.shape
@@ -113,8 +126,9 @@ def process(raw, block, point):
     ret = pickout(raw, block, point, show_list)
 
     global show
-    show[..., 0] -= 255 - expired_hint
-    show[..., -1] += expired_hint
+    if ENABLE_EXPIRED_HINT:
+        show[..., 0] -= 255 - expired_hint
+        show[..., -1] += expired_hint
     raw_show = cv2.resize(raw, (640, 480))
     show[:raw_show.shape[0], :raw_show.shape[1]] = raw_show
     show[:block.shape[0], raw_show.shape[1]:raw_show.shape[1] + block.shape[1]] = cv2.cvtColor(block, cv2.COLOR_GRAY2BGR)
@@ -146,12 +160,15 @@ def process(raw, block, point):
         show[200 * 2:200 * 3, raw_show.shape[1] + block.shape[1]:raw_show.shape[1] + block.shape[1] + 200] = show_list["canny_labels"]
         show[200 * 3:200 * 4, raw_show.shape[1] + block.shape[1]:raw_show.shape[1] + block.shape[1] + 200] = show_list["matrix"]
         show[200 * 4:200 * 5, raw_show.shape[1] + block.shape[1]:raw_show.shape[1] + block.shape[1] + 200] = show_list["warp_calibrated"]
-        show[:block.shape[0], -block.shape[1]:] = show_list["fit_img"]
+        show[240:240 * 2, -block.shape[1]:-block.shape[1] + 320] = cv2.resize(fade, (320, 240))[..., None]
+        show[:240, -block.shape[1]:-block.shape[1] + 320] = show_list["fit_img"]
     except KeyError:
         pass
 
     para = {}
     para["coeff"] = coeff
+    para["length"] = len(to_be_list)
+    para["alpha"] = alpha
     return para, show
 
 
@@ -214,8 +231,6 @@ def pickout(raw, rect, c, show_list):
     warp = cv2.warpPerspective(raw, H, (tw, th))
     show_list["warp"] = warp
 
-    warp = warp.astype(np.float32)
-
     canny = cv2.Canny((warp * 255).astype(np.uint8), 30, 200)
     canny = cv2.dilate(canny, None)
     canny = cv2.erode(canny, None)
@@ -227,6 +242,7 @@ def pickout(raw, rect, c, show_list):
     heights = stats[:, 3]
 
     expected_area = widths * heights
+    area[:, 0] = np.maximum(area[:, 0], 1)
     exp_ratio = expected_area / area[:, 0]
     reject = (exp_ratio > 1 + AREA_THRESHOLD) | (exp_ratio < 1 - AREA_THRESHOLD)
     stats_id = np.concatenate((
@@ -275,7 +291,7 @@ def pickout(raw, rect, c, show_list):
             std = np.std(warp[labels == c], axis=0)
             if (std > STD_THRESHOLD).any():
                 continue
-            if (labels == c).sum() < tw * th / 40:
+            if (labels == c).sum() < tw * th * MIN_PATCH_RATIO_THRESHOLD:
                 continue
 
             select.append(c)
@@ -305,7 +321,7 @@ def pickout(raw, rect, c, show_list):
 
     xs, x_half = get_half(centroids[select][:, 0])
     ys, y_half = get_half(centroids[select][:, 1])
-    if x_half < tw / 16 or y_half < th / 16:
+    if x_half < tw * MIN_INTERVAL_THRESHOLD or y_half < th * MIN_INTERVAL_THRESHOLD:
         return
 
     for x in xs:
@@ -329,7 +345,8 @@ def pickout(raw, rect, c, show_list):
             mean = np.mean(data, axis=0)
             if (std > STD_THRESHOLD).any():
                 continue
-
+            if (mean > 1 - EXPOSURE_THRESHOLD).any():
+                continue
             matrix[j, i] = mean
             matrix_use[j, i] = 1
 
@@ -347,10 +364,14 @@ def pickout(raw, rect, c, show_list):
             continue
         diff = line[1:] - line[:-1]
         diff *= 1 if diff.mean() > 0 else - 1
-        if diff.min() < 0:
+        if diff.min() < -EXPOSURE_THRESHOLD:
+            # print(i, x, diff.min(), "<0", line)
             continue
-        crstd = np.std(line / line.mean(axis=1)[..., None], axis=0).sum()
+        crstd = np.std(line / line.mean(axis=1)[..., None], axis=0).max()
+        if crstd > CRSTD_THRESHOLD:
+            continue
         best = max(best, (-crstd, (slice(None, None, None), i), line, diff))
+        # print(i, x, crstd, line)
 
     for j, y in enumerate(ys):
         line = matrix[j][matrix_use[j] > 0]
@@ -358,10 +379,14 @@ def pickout(raw, rect, c, show_list):
             continue
         diff = line[1:] - line[:-1]
         diff *= 1 if diff.mean() > 0 else - 1
-        if diff.min() < 0:
+        if diff.min() < -EXPOSURE_THRESHOLD:
+            # print(j, y, diff.min(), "<0", line)
             continue
-        crstd = np.std(line / line.mean(axis=1)[..., None], axis=0).sum()
+        crstd = np.std(line / line.mean(axis=1)[..., None], axis=0).max()
+        if crstd > CRSTD_THRESHOLD:
+            continue
         best = max(best, (-crstd, (j, slice(None, None, None)), line, diff))
+        # print(j, y, crstd, line)
 
     show_key = np.zeros((len(ys), len(xs)))
 
@@ -369,6 +394,8 @@ def pickout(raw, rect, c, show_list):
     if idx is None:
         return
     show_key[idx] = 1
+    # print("crstd", np.std(line / line.mean(axis=1)[..., None], axis=0).max(), np.std(diff, axis=0))
+    # plt.plot(line / line.mean(axis=1)[..., None] / 2)
 
     good = np.ones(line.shape[0], np.int)
     good[0] = 0
@@ -392,11 +419,16 @@ def pickout(raw, rect, c, show_list):
     show_list["canny_labels"] = new_label
 
     to_be_calibrate = line[good > 0]
-    coeff = 1 / to_be_calibrate
-    coeff /= coeff.min(axis=1)[..., None]
-    coeff = coeff.mean(axis=0)
+    if to_be_calibrate.shape[0] == 0:
+        return
+    to_be_calibrate = to_be_calibrate.mean(axis=0)
+    to_be_list.append(to_be_calibrate)
+    if len(to_be_list) > COEFF_LENGTH:
+        to_be_list.pop(0)
 
-    warp_calibrated = coeff * warp
+    new_coeff = 1 / np.mean(to_be_list, axis=0)
+    new_coeff /= new_coeff.min()
+    warp_calibrated = new_coeff * warp
     show_list["warp_calibrated"] = warp_calibrated
 
     cv2.waitKey(1)
@@ -408,10 +440,11 @@ def pickout(raw, rect, c, show_list):
 
     dist = ((x - raw.shape[1] / 2)**2 + (y - raw.shape[0] / 2)**2)**0.5 / max(raw.shape)
 
-    plt.scatter(dist, bright)
-    plt.draw()
+    if ENABLE_PLT:
+        plt.scatter(dist, bright)
+        plt.draw()
+        fit_img = np.fromstring(fit_fig.canvas.tostring_rgb(), dtype=np.uint8, sep='').reshape(fit_fig.canvas.get_width_height()[::-1] + (3,))
+        show_list["fit_img"] = fit_img.astype(np.float32) / 255
+        # show_list["fit_img"] = cv2.resize(fit_img.astype(np.float32) / 255, (640, 480))
 
-    fit_img = np.fromstring(fit_fig.canvas.tostring_rgb(), dtype=np.uint8, sep='').reshape(fit_fig.canvas.get_width_height()[::-1] + (3,))
-    show_list["fit_img"] = cv2.resize(fit_img.astype(np.float32) / 255, (640, 480))
-
-    return coeff, [dist.item(), bright.item()]
+    return new_coeff, [dist.item(), bright.item()]
